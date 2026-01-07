@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
+#include <unistd.h>
 
 #if !defined(__APPLE__)
 #include <malloc.h>
