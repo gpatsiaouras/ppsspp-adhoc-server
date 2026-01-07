@@ -27,6 +27,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <config.h>
@@ -42,6 +44,86 @@ void enable_address_reuse(int fd);
 void change_blocking_mode(int fd, int nonblocking);
 int create_listen_socket(uint16_t port);
 int server_loop(int server);
+
+/**
+ * Parse PROXY protocol v1 header (if present) and return the real client IP
+ * @param fd Accepted socket
+ * @param default_ip IP to return if no valid PROXY header is present (network order)
+ * @return client IP in network byte order
+ */
+uint32_t parse_proxy_v1(int fd, uint32_t default_ip)
+{
+	char buf[512];
+	int total = 0;
+	uint32_t result_ip = default_ip;
+
+	// Temporarily switch socket to blocking with a short recv timeout
+	change_blocking_mode(fd, 0);
+	struct timeval tv;
+	tv.tv_sec = 0;
+	tv.tv_usec = 200000; // 200ms
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+	// Peek until we find CRLF or run out/timeout
+	while(total < (int)sizeof(buf) - 1)
+	{
+		int n = recv(fd, buf + total, sizeof(buf) - total, MSG_PEEK);
+		if(n <= 0) break;
+		total += n;
+
+		// Search for CRLF
+		for(int i = 0; i + 1 < total; i++)
+		{
+			if(buf[i] == '\r' && buf[i+1] == '\n')
+			{
+				int header_len = i + 2;
+
+				// Consume exactly the header bytes from socket
+				char hdr[512];
+				int consumed = recv(fd, hdr, header_len, 0);
+				if(consumed != header_len)
+				{
+					// Couldn't consume expected bytes; give up
+					goto out;
+				}
+
+				// Null-terminate header for parsing
+				if(header_len >= (int)sizeof(hdr)) goto out;
+				hdr[header_len - 2] = '\0'; // overwrite '\r'
+
+				// Check PROXY v1 signature
+				if(strncmp(hdr, "PROXY ", 6) == 0)
+				{
+					char proto[32];
+					char src[128];
+					// Try to parse: PROXY TCP4 src dst sport dport
+					int matched = sscanf(hdr, "PROXY %31s %127s", proto, src);
+					if(matched == 2)
+					{
+						if(strcmp(proto, "TCP4") == 0)
+						{
+							struct in_addr ina;
+							if(inet_pton(AF_INET, src, &ina) == 1)
+							{
+								result_ip = ina.s_addr;
+							}
+						}
+					}
+				}
+
+				goto out;
+			}
+		}
+	}
+
+out:
+	// Restore non-blocking mode and clear timeout
+	tv.tv_sec = 0; tv.tv_usec = 0;
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	change_blocking_mode(fd, 1);
+
+	return result_ip;
+}
 
 /**
  * Server Entry Point
@@ -224,7 +306,12 @@ int server_loop(int server)
 				}
 				
 				// Login User (Stream)
-				if(loginresult != -1) login_user_stream(loginresult, addr.sin_addr.s_addr);
+				if(loginresult != -1)
+				{
+					// Parse PROXY protocol v1 header (if present) to get real client IP
+					uint32_t real_ip = parse_proxy_v1(loginresult, addr.sin_addr.s_addr);
+					login_user_stream(loginresult, real_ip);
+				}
 			} while(loginresult != -1);
 		}
 		
