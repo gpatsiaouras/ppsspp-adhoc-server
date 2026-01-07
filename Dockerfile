@@ -16,7 +16,6 @@ RUN apk add --no-cache \
   sqlite-dev
 
 COPY --from=build /app/AdhocServer /app/AdhocServer
-COPY --from=build /app/database.db /app/database.db
 
 EXPOSE 27312/tcp
 ENTRYPOINT [ "/app/AdhocServer" ]

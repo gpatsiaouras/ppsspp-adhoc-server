@@ -31,6 +31,7 @@
 #include <sys/time.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sqlite3.h>
 #include <config.h>
 #include <user.h>
 #include <status.h>
@@ -126,6 +127,33 @@ out:
 }
 
 /**
+ * Ensure the SQLite database file exists and has the required schema.
+ * Creates tables if they do not exist.
+ */
+void ensure_database_initialized(void)
+{
+	sqlite3 *db = NULL;
+	if(sqlite3_open(SERVER_DATABASE, &db) == SQLITE_OK)
+	{
+		const char *sql = "BEGIN;"
+						  "CREATE TABLE IF NOT EXISTS productids(id TEXT PRIMARY KEY, name TEXT);"
+						  "CREATE TABLE IF NOT EXISTS crosslinks(id_from TEXT PRIMARY KEY, id_to TEXT);"
+						  "COMMIT;";
+		char *errmsg = NULL;
+		if(sqlite3_exec(db, sql, NULL, NULL, &errmsg) != SQLITE_OK)
+		{
+			printf("Failed to initialize database: %s\n", errmsg);
+			sqlite3_free(errmsg);
+		}
+		sqlite3_close(db);
+	}
+	else
+	{
+		printf("Unable to open or create database '%s'.\n", SERVER_DATABASE);
+	}
+}
+
+/**
  * Server Entry Point
  * @param argc Number of Arguments
  * @param argv Arguments
@@ -144,6 +172,9 @@ int main(int argc, char * argv[])
 	
 	// Create Signal Receiver for kill / killall
 	signal(SIGTERM, interrupt);
+
+	// Ensure the database file exists and has required tables
+	ensure_database_initialized();
 	
 	// Create Listening Socket
 	int server = create_listen_socket(SERVER_PORT);
